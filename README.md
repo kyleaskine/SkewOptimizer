@@ -23,6 +23,11 @@ Running
 Gives the command line parameters required <br />
 <br />
 
+By default, skewopt searches for the skew with the best Murphy E value. To
+evaluate a specific skew instead, add it after the final coefficient:<br />
+`./skewopt y0 y1 c0 c1 c2 c3 c4 c5 c6 c7 c8 skew`<br />
+<br />
+
 Example
 -------
 2*x^6 + 1, x - 118571099379011784113736688648896417641748464297615937576404566024103044751294464 <br />
