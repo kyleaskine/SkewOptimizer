@@ -27,6 +27,10 @@ By default, skewopt searches for the skew with the best Murphy E value. To
 evaluate a specific skew instead, add it after the final coefficient:<br />
 `./skewopt y0 y1 c0 c1 c2 c3 c4 c5 c6 c7 c8 skew`<br />
 <br />
+For a degree-9 polynomial, use the explicit `-deg9` mode. The existing
+degree-8-and-lower command line remains unchanged:<br />
+`./skewopt -deg9 y0 y1 c0 c1 c2 c3 c4 c5 c6 c7 c8 c9 [skew]`<br />
+<br />
 
 Example
 -------

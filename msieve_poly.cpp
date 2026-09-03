@@ -8,7 +8,7 @@
 #include <values.h>
 
 // msieve stuff
-#define MAX_POLY_DEGREE 8
+#define MAX_POLY_DEGREE 9
 #define POLY_HEAP_SIZE 1
 #define PRECOMPUTED_NUM_PRIMES 9592
 #define SMALL_PRIME_BOUND 100
@@ -532,6 +532,9 @@ static dd_complex_t cplx_div(dd_complex_t a, dd_complex_t b) {
 
 static uint32_t mp_mod64(uint64_t a, uint32_t n) {
 
+#if defined(__wasm__)
+	return (uint32_t)(a % n);
+#else
 	uint32_t hi = (uint32_t)(a >> 32);
 	uint32_t lo = (uint32_t)a;
 
@@ -539,6 +542,7 @@ static uint32_t mp_mod64(uint64_t a, uint32_t n) {
 	     : "+d"(hi), "+a"(lo)
 	     : "rm"(n) : "cc");
 	return hi;
+#endif
 }
 
 static uint32_t mp_modmul_1(uint32_t a, uint32_t b, uint32_t n) {
@@ -708,21 +712,33 @@ static dd_t dd_gmp2dd(mpz_t x) {
 }
 
 static dd_precision_t dd_set_precision_ieee(void) {
+#if defined(__wasm__)
+	return 0;
+#else
 	dd_precision_t old_prec, new_prec;
 	__asm__ volatile ("fnstcw %0":"=m"(old_prec));
 	new_prec = (old_prec & ~0x0300) | 0x0200;
 	__asm__ volatile ("fldcw %0": :"m"(new_prec));
 	return old_prec;
+#endif
 }
 
 static void dd_clear_precision(dd_precision_t old_prec) {
+#if defined(__wasm__)
+	(void)old_prec;
+#else
 	__asm__ volatile ("fldcw %0": :"m"(old_prec));
+#endif
 }
 
 static uint32_t dd_precision_is_ieee(void) {
+#if defined(__wasm__)
+	return 1;
+#else
 	dd_precision_t prec;
 	__asm__ volatile ("fnstcw %0":"=m"(prec));
 	return ((prec & ~0x0300) == 0x0200) ? 1 : 0;
+#endif
 }
 
 static void mpz_poly_init(mpz_poly_t * poly) {
@@ -2169,6 +2185,7 @@ static void poly_expo_modmul(uint32_t *buf, uint32_t dm, uint32_t shift,
 
 	q = OP1(dm-1);
 	switch(dm-1) {
+	case 8: OP1(8) = mul_mac(OP1(8), shift, OP1(7), q, MOD(8), p, psq);
 	case 7: OP1(7) = mul_mac(OP1(7), shift, OP1(6), q, MOD(7), p, psq);
 	case 6: OP1(6) = mul_mac(OP1(6), shift, OP1(5), q, MOD(6), p, psq);
 	case 5: OP1(5) = mul_mac(OP1(5), shift, OP1(4), q, MOD(5), p, psq);
@@ -2197,6 +2214,8 @@ static void poly_expo_square(uint32_t *buf, uint32_t dm, uint32_t p, uint64_t ps
 	for (i = dm - 2; (int32_t)i >= 0; i--) {
 		q = mp_mod64(acc[dm-1], p);
 		switch(dm-1) {
+		case 8: acc[8] = sqr_mac(OP1(8), OP1(i), acc[7],
+							q, MOD(8), psq);
   		case 7: acc[7] = sqr_mac(OP1(7), OP1(i), acc[6], 
   							q, MOD(7), psq);
 		case 6: acc[6] = sqr_mac(OP1(6), OP1(i), acc[5], 
@@ -3065,7 +3084,7 @@ static double get_polyval(ddpoly_t *poly, double x, double h) {
 	double off;
 	double hpow;
 	dd_t *p = poly->coeff;
-	double p0, p1, p2, p3, p4, p5, p6, p7, p8;
+	double p0, p1, p2, p3, p4, p5, p6, p7, p8, p9;
 
 	switch (poly->degree) {
 	case 0:
@@ -3224,6 +3243,41 @@ static double get_polyval(ddpoly_t *poly, double x, double h) {
 		off += hpow * (8*p8*x+p7);
 		hpow *= h;
 		off += hpow * p8;
+		break;
+	case 9:
+		p0 = p[0].hi;
+		p1 = p[1].hi;
+		p2 = p[2].hi;
+		p3 = p[3].hi;
+		p4 = p[4].hi;
+		p5 = p[5].hi;
+		p6 = p[6].hi;
+		p7 = p[7].hi;
+		p8 = p[8].hi;
+		p9 = p[9].hi;
+
+		base = ((((((((p9*x+p8)*x+p7)*x+p6)*x+p5)*x+p4)*x+p3)*x+p2)*x+p1)*x+p0;
+		hpow = h;
+		off = hpow * ((((((((9*p9*x+8*p8)*x+7*p7)*x+6*p6)*x+5*p5)*x+
+						4*p4)*x+3*p3)*x+2*p2)*x+p1);
+		hpow *= h;
+		off += hpow * (((((((36*p9*x+28*p8)*x+21*p7)*x+15*p6)*x+
+						10*p5)*x+6*p4)*x+3*p3)*x+p2);
+		hpow *= h;
+		off += hpow * ((((((84*p9*x+56*p8)*x+35*p7)*x+20*p6)*x+
+						10*p5)*x+4*p4)*x+p3);
+		hpow *= h;
+		off += hpow * (((((126*p9*x+70*p8)*x+35*p7)*x+15*p6)*x+5*p5)*x+p4);
+		hpow *= h;
+		off += hpow * ((((126*p9*x+56*p8)*x+21*p7)*x+6*p6)*x+p5);
+		hpow *= h;
+		off += hpow * (((84*p9*x+28*p8)*x+7*p7)*x+p6);
+		hpow *= h;
+		off += hpow * ((36*p9*x+8*p8)*x+p7);
+		hpow *= h;
+		off += hpow * (9*p9*x+p8);
+		hpow *= h;
+		off += hpow * p9;
 		break;
 	default:
 		base = off = 0;
@@ -3783,6 +3837,3 @@ double dickman(dickman_t *aux, double arg) {
 
 	return sum;
 }
-
-
-

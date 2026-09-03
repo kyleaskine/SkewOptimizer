@@ -14,24 +14,32 @@ long deg( mpz_t*, long );
 double ComputeMaxima( long, mpz_t*, mpz_t*, double, double, double, double, double, double );
 double NominalSkew( long, mpz_t* );
 
-const int MAX_ACOEFF = 9;
+const int MAX_ACOEFF = 10;
 
 int main(int argc, char* argv[] )
 {
-  if ( argc != 12 && argc != 13 ) {
+  int degree9_mode = ( argc > 1 && strcmp( argv[1], "-deg9" ) == 0 );
+  int first_value = degree9_mode ? 2 : 1;
+  int max_degree = degree9_mode ? 9 : 8;
+  int num_coeffs = max_degree + 1;
+  int argc_without_skew = first_value + 2 + num_coeffs;
+
+  if ( argc != argc_without_skew && argc != argc_without_skew + 1 ) {
     printf("\n");
     printf("skewopt Version 1.0\n\n");
     printf("Usage: \"skewopt y0 y1 c0 c1 c2 c3 c4 c5 c6 c7 c8 [skew]\"");
+    printf("\n");
+    printf("       \"skewopt -deg9 y0 y1 c0 c1 c2 c3 c4 c5 c6 c7 c8 c9 [skew]\"");
     printf("\n\n");
     return -1;
   }
 
   double requested_skew = 0.0;
-  if ( argc == 13 ) {
+  if ( argc == argc_without_skew + 1 ) {
     char* end = NULL;
-    requested_skew = strtod( argv[12], &end );
-    if ( end == argv[12] || *end != '\0' || !isfinite( requested_skew ) || requested_skew <= 0.0 ) {
-      fprintf( stderr, "Invalid skew '%s': skew must be a positive finite number.\n", argv[12] );
+    requested_skew = strtod( argv[argc_without_skew], &end );
+    if ( end == argv[argc_without_skew] || *end != '\0' || !isfinite( requested_skew ) || requested_skew <= 0.0 ) {
+      fprintf( stderr, "Invalid skew '%s': skew must be a positive finite number.\n", argv[argc_without_skew] );
       return -1;
     }
   }
@@ -41,18 +49,11 @@ int main(int argc, char* argv[] )
 
   InitCoeffs( c, y );
 
-  mpz_set_str( y[0], argv[1], 10 );
-  mpz_set_str( y[1], argv[2], 10 );
+  mpz_set_str( y[0], argv[first_value], 10 );
+  mpz_set_str( y[1], argv[first_value + 1], 10 );
 
-  mpz_set_str( c[0], argv[3], 10 );
-  mpz_set_str( c[1], argv[4], 10 );
-  mpz_set_str( c[2], argv[5], 10 );
-  mpz_set_str( c[3], argv[6], 10 );
-  mpz_set_str( c[4], argv[7], 10 );
-  mpz_set_str( c[5], argv[8], 10 );
-  mpz_set_str( c[6], argv[9], 10 );
-  mpz_set_str( c[7], argv[10], 10 );
-  mpz_set_str( c[8], argv[11], 10 );
+  for ( int i = 0; i < num_coeffs; i++ )
+    mpz_set_str( c[i], argv[first_value + 2 + i], 10 );
 
   double skew = 0.0;
   double alpha = 0.0;
@@ -62,8 +63,8 @@ int main(int argc, char* argv[] )
   double rnorm = 0.0;
   long num_real_roots = 0;
 
-  long degree = deg( c, MAX_ACOEFF - 1 );
-  if ( argc == 13 ) {
+  long degree = deg( c, max_degree );
+  if ( argc == argc_without_skew + 1 ) {
     unsigned int fixed_num_real_roots = 0;
     skew = requested_skew;
     analyze_one_poly_hook( degree, c, y, skew, &size_score, &alpha, &combined_score, &fixed_num_real_roots );
