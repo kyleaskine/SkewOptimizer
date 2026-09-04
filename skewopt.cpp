@@ -4,6 +4,15 @@
 #include <gmp.h>
 #include <string.h>
 
+struct PolyScore {
+  double skew;
+  double alpha;
+  double size_score;
+  double combined_score;
+  unsigned int num_real_roots;
+  int valid;
+};
+
 // msieve_poly.cpp
 void analyze_one_poly_hook( long, mpz_t*, mpz_t*, double, double*, double*, double*, unsigned int* );
 
@@ -11,10 +20,16 @@ void InitCoeffs( mpz_t*, mpz_t* );
 void ClearCoeffs( mpz_t*, mpz_t* );
 void msieve_compute_params( mpz_t*, mpz_t*, long, double*, double*, double*, double*, long* );
 long deg( mpz_t*, long );
-double ComputeMaxima( long, mpz_t*, mpz_t*, double, double, double, double, double, double );
+PolyScore ScoreAtSkew( long, mpz_t*, mpz_t*, double );
+PolyScore OptimizeSkew( long, mpz_t*, mpz_t*, double );
 double NominalSkew( long, mpz_t* );
 
 const int MAX_ACOEFF = 10;
+const double MIN_OPTIMIZED_SKEW = 1e-12;
+const double MAX_OPTIMIZED_SKEW = 1e12;
+const double SKEW_EXPANSION_FACTOR = 10.0;
+const double LOG_SKEW_TOLERANCE = 1e-8;
+const double INVERSE_GOLDEN_RATIO = 0.6180339887498948482;
 
 int main(int argc, char* argv[] )
 {
@@ -49,21 +64,31 @@ int main(int argc, char* argv[] )
 
   InitCoeffs( c, y );
 
-  mpz_set_str( y[0], argv[first_value], 10 );
-  mpz_set_str( y[1], argv[first_value + 1], 10 );
+  int valid_input = mpz_set_str( y[0], argv[first_value], 10 ) == 0 &&
+                    mpz_set_str( y[1], argv[first_value + 1], 10 ) == 0;
 
   for ( int i = 0; i < num_coeffs; i++ )
-    mpz_set_str( c[i], argv[first_value + 2 + i], 10 );
+    valid_input = mpz_set_str( c[i], argv[first_value + 2 + i], 10 ) == 0 &&
+                  valid_input;
+
+  if ( !valid_input ) {
+    fprintf( stderr, "Invalid polynomial: all coefficients must be base-10 integers.\n" );
+    ClearCoeffs( c, y );
+    return -1;
+  }
 
   double skew = 0.0;
   double alpha = 0.0;
   double size_score = 0.0;
   double combined_score = 0.0;
-  double anorm = 0.0;
-  double rnorm = 0.0;
   long num_real_roots = 0;
 
   long degree = deg( c, max_degree );
+  if ( degree < 1 ) {
+    fprintf( stderr, "Invalid polynomial: the algebraic polynomial must have degree at least 1.\n" );
+    ClearCoeffs( c, y );
+    return -1;
+  }
   if ( argc == argc_without_skew + 1 ) {
     unsigned int fixed_num_real_roots = 0;
     skew = requested_skew;
@@ -73,7 +98,7 @@ int main(int argc, char* argv[] )
   }
   else {
     msieve_compute_params( c, y, degree, &skew, &alpha, &size_score, &combined_score, &num_real_roots );
-    printf("Best Skew: %.5f\n", skew );
+    printf("Best Skew: %.9g\n", skew );
   }
   printf("MurphyE: %.8e\n", combined_score );
 
@@ -116,81 +141,135 @@ long deg( mpz_t* c, long maxdeg ) {
 // use msieve library
 void msieve_compute_params( mpz_t* c, mpz_t* y, long degree, double* skew, double* alpha, double* size_score, double* combined_score, long* num_real_roots ) {
 
-  double best_skewness = NominalSkew( degree, c );
-  // Use a precision target relative to the skew magnitude.  An absolute
-  // target (the old 0.0000001) is unreachable for large skews: near a skew
-  // of ~1e9 one ULP (~2.4e-7) already exceeds it, so the bisection interval
-  // can never shrink below it.  A relative target resolves the skew to ~9
-  // significant figures at any magnitude.
-  double min_precision = best_skewness * 1e-9;
-  double tmpSkew = ComputeMaxima( degree, c, y, 0.1*best_skewness, -1.0, -1.0, 9.0*best_skewness, -1.0, min_precision );
-  if ( tmpSkew > 0.0 )
-    best_skewness = tmpSkew;
+  double nominal_skew = NominalSkew( degree, c );
+  if ( !isfinite( nominal_skew ) || nominal_skew <= 0.0 )
+    nominal_skew = 1.0;
+  PolyScore best = OptimizeSkew( degree, c, y, nominal_skew );
 
-  double local_size_score = -1.0;
-  double root_score = -1.0;
-  double local_combined_score = -1.0;
-  unsigned int local_num_real_roots = -1;
-  analyze_one_poly_hook( degree, c, y, best_skewness, &local_size_score, &root_score, &local_combined_score, &local_num_real_roots );
-  
-  *skew = best_skewness;
-  *size_score = local_size_score;
-  *alpha = root_score;
-  *combined_score = local_combined_score;
-  *num_real_roots = local_num_real_roots;
+  *skew = best.skew;
+  *size_score = best.size_score;
+  *alpha = best.alpha;
+  *combined_score = best.combined_score;
+  *num_real_roots = best.num_real_roots;
 }
 
-// Find the maxima for combined_score (assumption: only one maxima)
-double ComputeMaxima( long degree, mpz_t* c, mpz_t* y, double lowerbound, double lower_score, double middle_score, double upperbound, double upper_score, double min_precision ) {
+PolyScore ScoreAtSkew( long degree, mpz_t* c, mpz_t* y, double skew ) {
+  PolyScore result = { skew, 0.0, 0.0, -INFINITY, 0, 0 };
+  analyze_one_poly_hook( degree, c, y, skew, &result.size_score,
+                         &result.alpha, &result.combined_score,
+                         &result.num_real_roots );
+  result.valid = isfinite( result.combined_score );
+  return result;
+}
 
-  double size_score = 0.0;
-  double root_score = 0.0;
-  unsigned int num_real_roots = 0;
+static void KeepBetterScore( PolyScore* best, const PolyScore* candidate ) {
+  if ( candidate->valid &&
+       ( !best->valid || candidate->combined_score > best->combined_score ) )
+    *best = *candidate;
+}
 
-  double middle        = ( lowerbound + upperbound ) / 2.0;
-  double bottomquarter = ( lowerbound + middle ) / 2.0;
-  double topquarter    = ( middle + upperbound ) / 2.0;
-  double precision     = ( upperbound - lowerbound ) / 4.0;
+static double ExpandedUpperSkew( double skew, double upper_limit ) {
+  if ( skew >= upper_limit / SKEW_EXPANSION_FACTOR )
+    return upper_limit;
+  return skew * SKEW_EXPANSION_FACTOR;
+}
 
-  // The interval can only be bisected further if its quarter points are all
-  // distinct in double precision.  Once they collapse onto the endpoints the
-  // bracket cannot narrow, so we must stop regardless of the requested
-  // precision -- otherwise recursing on an unchanged interval loops forever.
-  // (This is what hangs large skews: at ~1e9 the interval freezes 2 ULP wide,
-  // where (upperbound-lowerbound)/2 rounds [bottomquarter,topquarter] right
-  // back to [lowerbound,upperbound].)
-  int subdividable = ( lowerbound < bottomquarter && bottomquarter < middle &&
-                       middle < topquarter && topquarter < upperbound );
+// Expand by decades until the maximum is bracketed, then refine in log-skew
+// space. Murphy E is assumed to have one maximum, as in the original search.
+// If the nominal skew lies outside the search limits, score it separately so
+// optimization can never make its score worse.
+PolyScore OptimizeSkew( long degree, mpz_t* c, mpz_t* y, double nominal_skew ) {
+  double lower_limit = MIN_OPTIMIZED_SKEW;
+  double upper_limit = MAX_OPTIMIZED_SKEW;
+  PolyScore nominal = ScoreAtSkew( degree, c, y, nominal_skew );
+  PolyScore best = nominal;
+  double center_skew = fmin( upper_limit,
+                             fmax( lower_limit, nominal_skew ) );
+  PolyScore center = center_skew == nominal_skew
+                       ? nominal : ScoreAtSkew( degree, c, y, center_skew );
+  KeepBetterScore( &best, &center );
 
-  if ( lower_score < 0.0 ) // uninitialized
-    analyze_one_poly_hook( degree, c, y, lowerbound, &size_score, &root_score, &lower_score, &num_real_roots );
+  double left_skew = fmax( lower_limit,
+                           center_skew / SKEW_EXPANSION_FACTOR );
+  double right_skew = ExpandedUpperSkew( center_skew, upper_limit );
+  PolyScore left = left_skew == center_skew
+                     ? center : ScoreAtSkew( degree, c, y, left_skew );
+  PolyScore right = right_skew == center_skew
+                      ? center : ScoreAtSkew( degree, c, y, right_skew );
+  KeepBetterScore( &best, &left );
+  KeepBetterScore( &best, &right );
 
-  if ( middle_score < 0.0 ) // uninitialized
-    analyze_one_poly_hook( degree, c, y, middle, &size_score, &root_score, &middle_score, &num_real_roots );
+  while ( true ) {
+    int improve_left = left.skew < center.skew && left.valid &&
+                       ( !center.valid ||
+                         left.combined_score > center.combined_score );
+    int improve_right = right.skew > center.skew && right.valid &&
+                        ( !center.valid ||
+                          right.combined_score > center.combined_score );
+    if ( !improve_left && !improve_right )
+      break;
 
-  double bottomquarter_score = 0.0;
-  analyze_one_poly_hook( degree, c, y, bottomquarter, &size_score, &root_score, &bottomquarter_score, &num_real_roots );
-
-  if ( ( lower_score > bottomquarter_score ) || ( bottomquarter_score > middle_score ) ) {
-    if ( precision < min_precision || !subdividable )
-      return lower_score > bottomquarter_score ? lowerbound : ( bottomquarter_score > middle_score ? bottomquarter : middle );
-
-    return ComputeMaxima( degree, c, y, lowerbound, lower_score, bottomquarter_score, middle, middle_score, min_precision );
+    if ( improve_left &&
+         ( !improve_right ||
+           left.combined_score >= right.combined_score ) ) {
+      if ( left.skew == lower_limit ) {
+        right = center;
+        center = left;
+        break;
+      }
+      right = center;
+      center = left;
+      left_skew = fmax( lower_limit,
+                        center.skew / SKEW_EXPANSION_FACTOR );
+      left = ScoreAtSkew( degree, c, y, left_skew );
+      KeepBetterScore( &best, &left );
+    }
+    else {
+      if ( right.skew == upper_limit ) {
+        left = center;
+        center = right;
+        break;
+      }
+      left = center;
+      center = right;
+      right_skew = ExpandedUpperSkew( center.skew, upper_limit );
+      right = ScoreAtSkew( degree, c, y, right_skew );
+      KeepBetterScore( &best, &right );
+    }
   }
 
-  if ( upper_score < 0.0 ) // uninitialized
-    analyze_one_poly_hook( degree, c, y, upperbound, &size_score, &root_score, &upper_score, &num_real_roots );
+  double log_left = log( left.skew );
+  double log_right = log( right.skew );
+  double log_first = log_right - INVERSE_GOLDEN_RATIO *
+                     ( log_right - log_left );
+  double log_second = log_left + INVERSE_GOLDEN_RATIO *
+                      ( log_right - log_left );
+  PolyScore first = ScoreAtSkew( degree, c, y, exp( log_first ) );
+  PolyScore second = ScoreAtSkew( degree, c, y, exp( log_second ) );
+  KeepBetterScore( &best, &first );
+  KeepBetterScore( &best, &second );
 
-  double topquarter_score = 0.0;
-  analyze_one_poly_hook( degree, c, y, topquarter, &size_score, &root_score, &topquarter_score, &num_real_roots );
-
-  if ( precision < min_precision || !subdividable )
-    return middle_score > topquarter_score ? middle : ( topquarter_score > upper_score ? topquarter : upperbound );
-
-  if ( middle_score > topquarter_score )
-    return ComputeMaxima( degree, c, y, bottomquarter, bottomquarter_score, middle_score, topquarter, topquarter_score, min_precision );
-
-  return ComputeMaxima( degree, c, y, middle, middle_score, topquarter_score, upperbound, upper_score, min_precision );
+  while ( log_right - log_left > LOG_SKEW_TOLERANCE ) {
+    if ( first.combined_score < second.combined_score ) {
+      log_left = log_first;
+      log_first = log_second;
+      first = second;
+      log_second = log_left + INVERSE_GOLDEN_RATIO *
+                   ( log_right - log_left );
+      second = ScoreAtSkew( degree, c, y, exp( log_second ) );
+      KeepBetterScore( &best, &second );
+    }
+    else {
+      log_right = log_second;
+      log_second = log_first;
+      second = first;
+      log_first = log_right - INVERSE_GOLDEN_RATIO *
+                  ( log_right - log_left );
+      first = ScoreAtSkew( degree, c, y, exp( log_first ) );
+      KeepBetterScore( &best, &first );
+    }
+  }
+  return best;
 }
 
 // Compute the nominal skew
