@@ -3808,6 +3808,12 @@ double dickman(dickman_t *aux, double arg) {
 	uint32_t num_coeffs;
 	double *coeffs;
 
+	/* Overflow in the homogeneous polynomial evaluation can produce NaN.
+	   Propagate it as an invalid score, never convert it to a table index.
+	   Infinity retains the limiting values handled by the bounds below. */
+	if (isnan(arg))
+		return arg;
+
 	if (arg <= 1.0)
 		return 1.0;
 

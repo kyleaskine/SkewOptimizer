@@ -10,6 +10,31 @@ CXX=${CXX:-g++}
 "$CXX" -O2 "$SCRIPT_DIR/skewopt.cpp" "$TEST_DIR/msieve_poly.o" \
     -lgmp -o "$TEST_DIR/skewopt"
 
+# NaN must never be converted to a Dickman table index. Check the helper
+# directly as well as the CLI, since an invalid index need not crash.
+cat >"$TEST_DIR/test-dickman.cpp" <<'CPP'
+#include <assert.h>
+#include "msieve_poly.cpp"
+int main() {
+    dickman_t table;
+    dickman_init(&table);
+    assert(isnan(dickman(&table, NAN)));
+    assert(dickman(&table, INFINITY) == 0.0);
+    assert(dickman(&table, -INFINITY) == 1.0);
+    assert(fabs(dickman(&table, 2.0) - (1.0 - log(2.0))) < 1e-14);
+    dickman_free(&table);
+}
+CPP
+"$CXX" -O2 -I"$SCRIPT_DIR" "$TEST_DIR/test-dickman.cpp" -lgmp -o "$TEST_DIR/test-dickman"
+"$TEST_DIR/test-dickman"
+overflow_output=$(
+    "$TEST_DIR/skewopt" -deg9 \
+        17449402268886407318558803753801 \
+        -42391158275216203514294433201 \
+        -11 0 0 0 0 0 0 0 0 9 1e300
+)
+grep -Eq '^MurphyE: -?nan$' <<<"$overflow_output"
+
 degree9_output=$(
     "$TEST_DIR/skewopt" -deg9 \
         17449402268886407318558803753801 \
